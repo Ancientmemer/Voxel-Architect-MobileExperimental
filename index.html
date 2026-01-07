@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Voxel Architect – Mobile Gesture Experimental</title>
+<title>Voxel Architect – Mobile Gesture Debug</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
 <style>
@@ -19,7 +19,6 @@ body {
   width: 100vw;
   height: 100vh;
   object-fit: cover;
-  transform: scaleX(-1);
   z-index: 1;
 }
 
@@ -36,7 +35,6 @@ body {
   width: 100vw;
   height: 100vh;
   z-index: 10;
-  transform: scaleX(-1);
   pointer-events: none;
 }
 
@@ -51,20 +49,20 @@ body {
   border-left: 3px solid #00f0ff;
   font-size: 12px;
 }
-
 .stat { color: #fff; }
+.debug { color: #ffcc00; font-size: 11px; }
 </style>
 </head>
 
 <body>
 
 <div id="ui">
-  <div>ARCHITECT_OS</div>
-  <div>MODE: <span id="mode" class="stat">BOOTING</span></div>
+  <div>ARCHITECT_OS – DEBUG</div>
+  <div>MODE: <span id="mode" class="stat">BOOT</span></div>
   <div>VOXELS: <span id="count" class="stat">0</span></div>
-  <div style="font-size:10px;color:#ff5555">
-    MOBILE GESTURE MODE (EXPERIMENTAL)
-  </div>
+  <div class="debug">PINCH: <span id="dbgPinch">0</span></div>
+  <div class="debug">TIMER: <span id="dbgTimer">0</span></div>
+  <div class="debug">STATE: <span id="dbgState">---</span></div>
 </div>
 
 <video id="input_video" autoplay playsinline></video>
@@ -76,15 +74,15 @@ body {
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
 <script>
-/* ================= DEVICE ================= */
-const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-
 /* ================= UI ================= */
 const video = document.getElementById("input_video");
 const bioCanvas = document.getElementById("biometric_canvas");
 const bioCtx = bioCanvas.getContext("2d");
 const modeEl = document.getElementById("mode");
 const countEl = document.getElementById("count");
+const dbgPinch = document.getElementById("dbgPinch");
+const dbgTimer = document.getElementById("dbgTimer");
+const dbgState = document.getElementById("dbgState");
 
 /* ================= THREE ================= */
 const scene = new THREE.Scene();
@@ -110,11 +108,6 @@ scene.add(voxelGroup);
 const gridSize = 1.2;
 const placed = new Map();
 
-/* ================= HELPERS ================= */
-function dist(a,b){
-  return Math.hypot(a.x-b.x,a.y-b.y,(a.z||0)-(b.z||0));
-}
-
 function cube(x,y,z){
   const g = new THREE.BoxGeometry(gridSize*0.95,gridSize*0.95,gridSize*0.95);
   const m = new THREE.MeshPhongMaterial({
@@ -129,52 +122,68 @@ function cube(x,y,z){
   return mesh;
 }
 
-/* ================= STATE ================= */
-let buildTimer = 0;
-let eraseTimer = 0;
-const HOLD = 450;
-const PINCH = 0.05;
-
-/* ================= HAND DRAW ================= */
-function drawHand(lm){
-  bioCtx.beginPath();
-  lm.forEach(p=>{
-    bioCtx.fillStyle="#00f0ff";
-    bioCtx.fillRect(p.x*bioCanvas.width-2,p.y*bioCanvas.height-2,4,4);
-  });
+/* ================= HELPERS ================= */
+function dist(a,b){
+  return Math.hypot(a.x-b.x,a.y-b.y);
 }
 
-/* ================= CORE LOGIC ================= */
+/* ================= STATE ================= */
+let buildTimer = 0;
+const HOLD = 500;
+const PINCH = 0.08;   // mobile safe
+let lastTime = performance.now();
+
+/* ================= CORE ================= */
 function onResults(res){
+  const now = performance.now();
+  const delta = now - lastTime;
+  lastTime = now;
+
   bioCtx.clearRect(0,0,bioCanvas.width,bioCanvas.height);
-  if(!res.multiHandLandmarks) return;
+  if(!res.multiHandLandmarks){
+    dbgState.innerText = "NO HAND";
+    buildTimer = 0;
+    return;
+  }
 
   const hand = res.multiHandLandmarks[0];
-  drawHand(hand);
-
   const thumb = hand[4];
   const index = hand[8];
 
-  const pinching = dist(thumb,index) < PINCH;
+  // draw debug dots
+  bioCtx.fillStyle = "#00f0ff";
+  [thumb,index].forEach(p=>{
+    bioCtx.fillRect(
+      p.x * bioCanvas.width - 5,
+      p.y * bioCanvas.height - 5,
+      10,10
+    );
+  });
+
+  const pinchDist = dist(thumb,index);
+  dbgPinch.innerText = pinchDist.toFixed(3);
+
+  const pinching = pinchDist < PINCH;
 
   const world = new THREE.Vector3(
     (0.5-index.x)*22,
     (0.5-index.y)*16,
-    -index.z*18
+    0
   );
 
   const local = voxelGroup.worldToLocal(world.clone());
   const gx = Math.round(local.x/gridSize)*gridSize;
   const gy = Math.round(local.y/gridSize)*gridSize;
-  const gz = Math.round(local.z/gridSize)*gridSize;
+  const gz = 0;
   const key = `${gx.toFixed(1)},${gy.toFixed(1)},${gz.toFixed(1)}`;
 
   if(pinching){
-    eraseTimer = 0;
-    if(buildTimer < HOLD){
-      buildTimer += 16;
-      modeEl.innerText = "BUILD SYNCING";
-    } else {
+    buildTimer += delta;
+    dbgTimer.innerText = Math.floor(buildTimer);
+    dbgState.innerText = "PINCHING";
+    modeEl.innerText = "BUILD SYNCING";
+
+    if(buildTimer >= HOLD){
       if(!placed.has(key)){
         const c = cube(gx,gy,gz);
         voxelGroup.add(c);
@@ -182,15 +191,18 @@ function onResults(res){
         countEl.innerText = placed.size;
       }
       modeEl.innerText = "BUILDING";
+      dbgState.innerText = "BUILD";
     }
   } else {
     buildTimer = 0;
+    dbgTimer.innerText = 0;
+    dbgState.innerText = "TRACKING";
     modeEl.innerText = "TRACKING";
   }
 }
 
 /* ================= MEDIAPIPE ================= */
-modeEl.innerText = IS_MOBILE ? "MOBILE GESTURE ACTIVE" : "DESKTOP GESTURE ACTIVE";
+modeEl.innerText = "MOBILE GESTURE DEBUG";
 
 const hands = new Hands({
   locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
@@ -222,5 +234,6 @@ function animate(){
 }
 animate();
 </script>
+
 </body>
 </html>
