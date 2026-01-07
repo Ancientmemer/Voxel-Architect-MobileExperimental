@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Stress / Confidence Analyzer – Phase 1</title>
+<title>Stress & Expression Analyzer – Phase 2</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
 <style>
@@ -13,20 +13,13 @@ body{
   font-family:monospace;
   overflow:hidden;
 }
-video{
+video, canvas{
   position:absolute;
   width:100vw;
   height:100vh;
   object-fit:cover;
-  z-index:1;
 }
-canvas{
-  position:absolute;
-  width:100vw;
-  height:100vh;
-  z-index:2;
-  pointer-events:none;
-}
+canvas{pointer-events:none}
 #ui{
   position:absolute;
   top:10px;
@@ -37,6 +30,7 @@ canvas{
   border-left:3px solid #00f0ff;
   font-size:12px;
 }
+.stat{color:#fff}
 button{
   background:#001122;
   color:#00f0ff;
@@ -44,22 +38,21 @@ button{
   padding:5px 8px;
   margin-top:6px;
 }
-.stat{color:#fff}
+.warn{font-size:10px;color:#ff5555}
 </style>
 </head>
 
 <body>
 
 <div id="ui">
-  <div><b>STRESS ANALYZER (EXPERIMENTAL)</b></div>
+  <div><b>STRESS & EXPRESSION ANALYZER</b></div>
   <div>Camera: <span id="camLabel" class="stat">FRONT</span></div>
+  <div>Expression: <span id="exprVal" class="stat">---</span></div>
   <div>Blinks/sec: <span id="blinkVal" class="stat">0</span></div>
-  <div>Head Move: <span id="moveVal" class="stat">0</span></div>
+  <div>Movement: <span id="moveVal" class="stat">0</span></div>
   <div>Stress Score: <span id="stressVal" class="stat">0</span></div>
   <button id="switchCam">Switch Camera</button>
-  <div style="font-size:10px;color:#ff5555;margin-top:6px">
-    ⚠️ Not a lie detector. Experimental only.
-  </div>
+  <div class="warn">⚠️ Experimental. Not a lie detector.</div>
 </div>
 
 <video id="video" autoplay playsinline muted></video>
@@ -73,28 +66,24 @@ const video = document.getElementById("video");
 const canvas = document.getElementById("overlay");
 const ctx = canvas.getContext("2d");
 
+const camLabel = document.getElementById("camLabel");
 const blinkVal = document.getElementById("blinkVal");
 const moveVal = document.getElementById("moveVal");
 const stressVal = document.getElementById("stressVal");
-const camLabel = document.getElementById("camLabel");
+const exprVal = document.getElementById("exprVal");
 
 canvas.width = innerWidth;
 canvas.height = innerHeight;
 
 /* ========= CAMERA ========= */
-let currentFacing = "user"; // user | environment
+let currentFacing = "user";
 let stream = null;
+let postureMode = false;
 
 async function startCamera(){
-  if(stream){
-    stream.getTracks().forEach(t=>t.stop());
-  }
+  if(stream) stream.getTracks().forEach(t=>t.stop());
   stream = await navigator.mediaDevices.getUserMedia({
-    video:{
-      facingMode: currentFacing,
-      width:1280,
-      height:720
-    },
+    video:{ facingMode: currentFacing, width:1280, height:720 },
     audio:false
   });
   video.srcObject = stream;
@@ -104,14 +93,14 @@ async function startCamera(){
 document.getElementById("switchCam").onclick = ()=>{
   currentFacing = currentFacing === "user" ? "environment" : "user";
   camLabel.innerText = currentFacing === "user" ? "FRONT" : "BACK";
+  postureMode = currentFacing === "environment";
   startCamera();
 };
 
 /* ========= FACEMESH ========= */
 const faceMesh = new FaceMesh({
-  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
+  locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
 });
-
 faceMesh.setOptions({
   maxNumFaces:1,
   refineLandmarks:true,
@@ -119,70 +108,102 @@ faceMesh.setOptions({
   minTrackingConfidence:0.6
 });
 
-/* ========= ANALYSIS STATE ========= */
-let lastBlinkTime = 0;
+/* ========= STATE ========= */
 let blinkCount = 0;
+let lastBlink = 0;
 let prevHeadX = null;
-let headMovement = 0;
+let headMove = 0;
+
+let prevFrame = null;
+let motionScore = 0;
+
+/* ========= POSTURE (BACK CAMERA) ========= */
+function analyzePosture(){
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
+  if(prevFrame){
+    let diff=0;
+    for(let i=0;i<frame.data.length;i+=40){
+      diff+=Math.abs(frame.data[i]-prevFrame.data[i]);
+    }
+    motionScore = diff/100000;
+  }
+  prevFrame = frame;
+}
 
 /* ========= CORE ========= */
 faceMesh.onResults(res=>{
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  if(!res.multiFaceLandmarks) return;
 
+  if(postureMode){
+    analyzePosture();
+    moveVal.innerText = motionScore.toFixed(2);
+    const stress = Math.min(100,Math.floor(motionScore*80));
+    stressVal.innerText = stress;
+    exprVal.innerText = "BODY MODE";
+    return;
+  }
+
+  if(!res.multiFaceLandmarks) return;
   const lm = res.multiFaceLandmarks[0];
 
-  /* ---- Blink detection (eye vertical distance) ---- */
+  /* ---- Blink ---- */
   const eyeTop = lm[159];
-  const eyeBottom = lm[145];
-  const eyeDist = Math.abs(eyeTop.y - eyeBottom.y);
-
+  const eyeBot = lm[145];
+  const eyeDist = Math.abs(eyeTop.y-eyeBot.y);
   const now = performance.now();
-  if(eyeDist < 0.005 && now - lastBlinkTime > 300){
+  if(eyeDist<0.005 && now-lastBlink>300){
     blinkCount++;
-    lastBlinkTime = now;
+    lastBlink=now;
   }
 
   /* ---- Head movement ---- */
   const nose = lm[1];
-  if(prevHeadX !== null){
-    headMovement += Math.abs(nose.x - prevHeadX);
-  }
+  if(prevHeadX!==null) headMove+=Math.abs(nose.x-prevHeadX);
   prevHeadX = nose.x;
 
-  /* ---- Draw face points (debug) ---- */
+  /* ---- Expression analysis ---- */
+  const mouthOpen = Math.abs(lm[13].y - lm[14].y);
+  const jawTension = Math.abs(lm[152].y - lm[13].y);
+  const browLift = Math.abs(lm[70].y - lm[159].y);
+
+  let expression="Neutral";
+  if(blinkCount>3 && mouthOpen<0.01 && browLift<0.02){
+    expression="Stressed";
+  }else if(blinkCount<2 && mouthOpen>0.015){
+    expression="Relaxed";
+  }
+
+  exprVal.innerText = expression;
+
+  /* ---- Stress score ---- */
+  let stress = blinkCount*8 + headMove*400;
+  stress = Math.min(100,Math.floor(stress));
+
+  blinkVal.innerText = blinkCount;
+  moveVal.innerText = headMove.toFixed(3);
+  stressVal.innerText = stress;
+
+  /* ---- Debug draw ---- */
   ctx.fillStyle="#00f0ff";
   lm.forEach(p=>{
     ctx.fillRect(p.x*canvas.width-1,p.y*canvas.height-1,2,2);
   });
 
-  /* ---- Metrics per second ---- */
-  blinkVal.innerText = blinkCount;
-  moveVal.innerText = headMovement.toFixed(3);
-
-  /* ---- Stress score (simple rule-based) ---- */
-  let stress = 0;
-  stress += blinkCount * 8;
-  stress += headMovement * 400;
-  stress = Math.min(100, Math.floor(stress));
-
-  stressVal.innerText = stress;
-
-  /* ---- reset every second ---- */
-  if(now % 1000 < 16){
-    blinkCount = 0;
-    headMovement = 0;
+  if(now%1000<16){
+    blinkCount=0;
+    headMove=0;
   }
 });
 
-/* ========= FRAME LOOP ========= */
-async function process(){
+/* ========= LOOP ========= */
+async function loop(){
   await faceMesh.send({image:video});
-  requestAnimationFrame(process);
+  requestAnimationFrame(loop);
 }
 
 /* ========= START ========= */
-startCamera().then(process);
+startCamera().then(loop);
 </script>
 
 </body>
