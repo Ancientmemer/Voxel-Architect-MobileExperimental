@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Stress & Expression Analyzer – Phase 2</title>
+<title>PSY-LENS – Psychological State Observer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
 <style>
@@ -13,7 +13,7 @@ body{
   font-family:monospace;
   overflow:hidden;
 }
-video, canvas{
+video,canvas{
   position:absolute;
   width:100vw;
   height:100vh;
@@ -38,21 +38,21 @@ button{
   padding:5px 8px;
   margin-top:6px;
 }
-.warn{font-size:10px;color:#ff5555}
+.warn{font-size:10px;color:#ff6666}
 </style>
 </head>
 
 <body>
 
 <div id="ui">
-  <div><b>STRESS & EXPRESSION ANALYZER</b></div>
-  <div>Camera: <span id="camLabel" class="stat">FRONT</span></div>
-  <div>Expression: <span id="exprVal" class="stat">---</span></div>
-  <div>Blinks/sec: <span id="blinkVal" class="stat">0</span></div>
-  <div>Movement: <span id="moveVal" class="stat">0</span></div>
-  <div>Stress Score: <span id="stressVal" class="stat">0</span></div>
+  <div><b>PSY-LENS</b></div>
+  <div>Mode: <span id="mode" class="stat">FACIAL</span></div>
+  <div>Arousal: <span id="arousal" class="stat">—</span></div>
+  <div>Cognitive Load: <span id="load" class="stat">—</span></div>
+  <div>Behavior Regulation: <span id="reg" class="stat">—</span></div>
+  <div>Expression State: <span id="expr" class="stat">—</span></div>
   <button id="switchCam">Switch Camera</button>
-  <div class="warn">⚠️ Experimental. Not a lie detector.</div>
+  <div class="warn">⚠️ Observational system. Not diagnostic.</div>
 </div>
 
 <video id="video" autoplay playsinline muted></video>
@@ -66,24 +66,24 @@ const video = document.getElementById("video");
 const canvas = document.getElementById("overlay");
 const ctx = canvas.getContext("2d");
 
-const camLabel = document.getElementById("camLabel");
-const blinkVal = document.getElementById("blinkVal");
-const moveVal = document.getElementById("moveVal");
-const stressVal = document.getElementById("stressVal");
-const exprVal = document.getElementById("exprVal");
+const arousalEl = document.getElementById("arousal");
+const loadEl = document.getElementById("load");
+const regEl = document.getElementById("reg");
+const exprEl = document.getElementById("expr");
+const modeEl = document.getElementById("mode");
 
 canvas.width = innerWidth;
 canvas.height = innerHeight;
 
 /* ========= CAMERA ========= */
-let currentFacing = "user";
+let facing = "user";
 let stream = null;
-let postureMode = false;
+let bodyMode = false;
 
 async function startCamera(){
   if(stream) stream.getTracks().forEach(t=>t.stop());
   stream = await navigator.mediaDevices.getUserMedia({
-    video:{ facingMode: currentFacing, width:1280, height:720 },
+    video:{ facingMode:facing, width:1280, height:720 },
     audio:false
   });
   video.srcObject = stream;
@@ -91,9 +91,9 @@ async function startCamera(){
 }
 
 document.getElementById("switchCam").onclick = ()=>{
-  currentFacing = currentFacing === "user" ? "environment" : "user";
-  camLabel.innerText = currentFacing === "user" ? "FRONT" : "BACK";
-  postureMode = currentFacing === "environment";
+  facing = facing === "user" ? "environment" : "user";
+  bodyMode = facing === "environment";
+  modeEl.innerText = bodyMode ? "BODY" : "FACIAL";
   startCamera();
 };
 
@@ -109,16 +109,12 @@ faceMesh.setOptions({
 });
 
 /* ========= STATE ========= */
-let blinkCount = 0;
-let lastBlink = 0;
-let prevHeadX = null;
-let headMove = 0;
+let blink=0,lastBlink=0;
+let prevX=null, headAgitation=0;
+let prevFrame=null, motion=0;
 
-let prevFrame = null;
-let motionScore = 0;
-
-/* ========= POSTURE (BACK CAMERA) ========= */
-function analyzePosture(){
+/* ========= BODY ANALYSIS ========= */
+function analyzeBody(){
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
   if(prevFrame){
@@ -126,74 +122,50 @@ function analyzePosture(){
     for(let i=0;i<frame.data.length;i+=40){
       diff+=Math.abs(frame.data[i]-prevFrame.data[i]);
     }
-    motionScore = diff/100000;
+    motion = diff/100000;
   }
   prevFrame = frame;
+
+  regEl.innerText = motion>0.6 ? "Unstable" : "Stable";
+  arousalEl.innerText = motion>0.8 ? "Elevated" : "Moderate";
+  loadEl.innerText = motion>0.7 ? "High" : "Moderate";
+  exprEl.innerText = "—";
 }
 
 /* ========= CORE ========= */
 faceMesh.onResults(res=>{
   ctx.clearRect(0,0,canvas.width,canvas.height);
 
-  if(postureMode){
-    analyzePosture();
-    moveVal.innerText = motionScore.toFixed(2);
-    const stress = Math.min(100,Math.floor(motionScore*80));
-    stressVal.innerText = stress;
-    exprVal.innerText = "BODY MODE";
+  if(bodyMode){
+    analyzeBody();
     return;
   }
 
   if(!res.multiFaceLandmarks) return;
   const lm = res.multiFaceLandmarks[0];
-
-  /* ---- Blink ---- */
-  const eyeTop = lm[159];
-  const eyeBot = lm[145];
-  const eyeDist = Math.abs(eyeTop.y-eyeBot.y);
   const now = performance.now();
+
+  const eyeDist = Math.abs(lm[159].y-lm[145].y);
   if(eyeDist<0.005 && now-lastBlink>300){
-    blinkCount++;
-    lastBlink=now;
+    blink++; lastBlink=now;
   }
 
-  /* ---- Head movement ---- */
   const nose = lm[1];
-  if(prevHeadX!==null) headMove+=Math.abs(nose.x-prevHeadX);
-  prevHeadX = nose.x;
+  if(prevX!==null) headAgitation+=Math.abs(nose.x-prevX);
+  prevX=nose.x;
 
-  /* ---- Expression analysis ---- */
-  const mouthOpen = Math.abs(lm[13].y - lm[14].y);
-  const jawTension = Math.abs(lm[152].y - lm[13].y);
-  const browLift = Math.abs(lm[70].y - lm[159].y);
+  const mouthOpen = Math.abs(lm[13].y-lm[14].y);
+  const brow = Math.abs(lm[70].y-lm[159].y);
 
-  let expression="Neutral";
-  if(blinkCount>3 && mouthOpen<0.01 && browLift<0.02){
-    expression="Stressed";
-  }else if(blinkCount<2 && mouthOpen>0.015){
-    expression="Relaxed";
-  }
+  arousalEl.innerText = blink>3 ? "Elevated" : "Moderate";
+  loadEl.innerText = blink>3 || headAgitation>0.02 ? "High" : "Moderate";
+  regEl.innerText = headAgitation>0.03 ? "Unstable" : "Stable";
 
-  exprVal.innerText = expression;
+  if(mouthOpen<0.01 && brow<0.02) exprEl.innerText="Tense";
+  else if(mouthOpen>0.015) exprEl.innerText="Relaxed";
+  else exprEl.innerText="Neutral";
 
-  /* ---- Stress score ---- */
-  let stress = blinkCount*8 + headMove*400;
-  stress = Math.min(100,Math.floor(stress));
-
-  blinkVal.innerText = blinkCount;
-  moveVal.innerText = headMove.toFixed(3);
-  stressVal.innerText = stress;
-
-  /* ---- Debug draw ---- */
-  ctx.fillStyle="#00f0ff";
-  lm.forEach(p=>{
-    ctx.fillRect(p.x*canvas.width-1,p.y*canvas.height-1,2,2);
-  });
-
-  if(now%1000<16){
-    blinkCount=0;
-    headMove=0;
-  }
+  if(now%1000<16){ blink=0; headAgitation=0; }
 });
 
 /* ========= LOOP ========= */
