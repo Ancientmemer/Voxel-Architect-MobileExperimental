@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Voxel Architect – Mobile Gesture Experimental</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
+<style>
+body {
+  margin: 0;
+  background: #000;
+  overflow: hidden;
+  font-family: monospace;
+  touch-action: none;
+}
+
+#input_video {
+  position: absolute;
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  transform: scaleX(-1);
+  z-index: 1;
+}
+
+#three_canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+#biometric_canvas {
+  position: absolute;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10;
+  transform: scaleX(-1);
+  pointer-events: none;
+}
+
+#ui {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 100;
+  color: #00f0ff;
+  background: rgba(0,0,0,0.6);
+  padding: 12px;
+  border-left: 3px solid #00f0ff;
+  font-size: 12px;
+}
+
+.stat { color: #fff; }
+</style>
+</head>
+
+<body>
+
+<div id="ui">
+  <div>ARCHITECT_OS</div>
+  <div>MODE: <span id="mode" class="stat">BOOTING</span></div>
+  <div>VOXELS: <span id="count" class="stat">0</span></div>
+  <div style="font-size:10px;color:#ff5555">
+    MOBILE GESTURE MODE (EXPERIMENTAL)
+  </div>
+</div>
+
+<video id="input_video" autoplay playsinline></video>
+<canvas id="three_canvas"></canvas>
+<canvas id="biometric_canvas"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+/* ================= DEVICE ================= */
+const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+/* ================= UI ================= */
+const video = document.getElementById("input_video");
+const bioCanvas = document.getElementById("biometric_canvas");
+const bioCtx = bioCanvas.getContext("2d");
+const modeEl = document.getElementById("mode");
+const countEl = document.getElementById("count");
+
+/* ================= THREE ================= */
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 1000);
+camera.position.z = 18;
+
+const renderer = new THREE.WebGLRenderer({
+  canvas: document.getElementById("three_canvas"),
+  alpha: true,
+  antialias: true
+});
+renderer.setSize(innerWidth, innerHeight);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const sun = new THREE.DirectionalLight(0x00f0ff, 1);
+sun.position.set(5,5,5);
+scene.add(sun);
+
+const voxelGroup = new THREE.Group();
+scene.add(voxelGroup);
+
+/* ================= VOXELS ================= */
+const gridSize = 1.2;
+const placed = new Map();
+
+/* ================= HELPERS ================= */
+function dist(a,b){
+  return Math.hypot(a.x-b.x,a.y-b.y,(a.z||0)-(b.z||0));
+}
+
+function cube(x,y,z){
+  const g = new THREE.BoxGeometry(gridSize*0.95,gridSize*0.95,gridSize*0.95);
+  const m = new THREE.MeshPhongMaterial({
+    color:0x001122,
+    emissive:0x00f0ff,
+    emissiveIntensity:0.4,
+    transparent:true,
+    opacity:0.85
+  });
+  const mesh = new THREE.Mesh(g,m);
+  mesh.position.set(x,y,z);
+  return mesh;
+}
+
+/* ================= STATE ================= */
+let buildTimer = 0;
+let eraseTimer = 0;
+const HOLD = 450;
+const PINCH = 0.05;
+
+/* ================= HAND DRAW ================= */
+function drawHand(lm){
+  bioCtx.beginPath();
+  lm.forEach(p=>{
+    bioCtx.fillStyle="#00f0ff";
+    bioCtx.fillRect(p.x*bioCanvas.width-2,p.y*bioCanvas.height-2,4,4);
+  });
+}
+
+/* ================= CORE LOGIC ================= */
+function onResults(res){
+  bioCtx.clearRect(0,0,bioCanvas.width,bioCanvas.height);
+  if(!res.multiHandLandmarks) return;
+
+  const hand = res.multiHandLandmarks[0];
+  drawHand(hand);
+
+  const thumb = hand[4];
+  const index = hand[8];
+
+  const pinching = dist(thumb,index) < PINCH;
+
+  const world = new THREE.Vector3(
+    (0.5-index.x)*22,
+    (0.5-index.y)*16,
+    -index.z*18
+  );
+
+  const local = voxelGroup.worldToLocal(world.clone());
+  const gx = Math.round(local.x/gridSize)*gridSize;
+  const gy = Math.round(local.y/gridSize)*gridSize;
+  const gz = Math.round(local.z/gridSize)*gridSize;
+  const key = `${gx.toFixed(1)},${gy.toFixed(1)},${gz.toFixed(1)}`;
+
+  if(pinching){
+    eraseTimer = 0;
+    if(buildTimer < HOLD){
+      buildTimer += 16;
+      modeEl.innerText = "BUILD SYNCING";
+    } else {
+      if(!placed.has(key)){
+        const c = cube(gx,gy,gz);
+        voxelGroup.add(c);
+        placed.set(key,c);
+        countEl.innerText = placed.size;
+      }
+      modeEl.innerText = "BUILDING";
+    }
+  } else {
+    buildTimer = 0;
+    modeEl.innerText = "TRACKING";
+  }
+}
+
+/* ================= MEDIAPIPE ================= */
+modeEl.innerText = IS_MOBILE ? "MOBILE GESTURE ACTIVE" : "DESKTOP GESTURE ACTIVE";
+
+const hands = new Hands({
+  locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+
+hands.setOptions({
+  maxNumHands:1,
+  modelComplexity:0,
+  minDetectionConfidence:0.7,
+  minTrackingConfidence:0.7
+});
+
+hands.onResults(onResults);
+
+new Camera(video,{
+  onFrame:async()=>{
+    bioCanvas.width = video.videoWidth;
+    bioCanvas.height = video.videoHeight;
+    await hands.send({image:video});
+  },
+  width: 960,
+  height: 720
+}).start();
+
+/* ================= LOOP ================= */
+function animate(){
+  requestAnimationFrame(animate);
+  renderer.render(scene,camera);
+}
+animate();
+</script>
+</body>
+</html>
