@@ -2,176 +2,187 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Voxel Architect – Mobile Touch + Gyro</title>
+<title>Stress / Confidence Analyzer – Phase 1</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
 <style>
 body{
   margin:0;
   background:#000;
-  overflow:hidden;
+  color:#00f0ff;
   font-family:monospace;
-  touch-action:none;
+  overflow:hidden;
+}
+video{
+  position:absolute;
+  width:100vw;
+  height:100vh;
+  object-fit:cover;
+  z-index:1;
+}
+canvas{
+  position:absolute;
+  width:100vw;
+  height:100vh;
+  z-index:2;
+  pointer-events:none;
 }
 #ui{
   position:absolute;
   top:10px;
   left:10px;
   z-index:10;
-  background:rgba(0,0,0,0.6);
-  color:#00f0ff;
+  background:rgba(0,0,0,0.65);
   padding:12px;
   border-left:3px solid #00f0ff;
   font-size:12px;
 }
+button{
+  background:#001122;
+  color:#00f0ff;
+  border:1px solid #00f0ff;
+  padding:5px 8px;
+  margin-top:6px;
+}
 .stat{color:#fff}
-canvas{display:block}
 </style>
 </head>
 
 <body>
 
 <div id="ui">
-  <div>ARCHITECT_OS – MOBILE MODE</div>
-  <div>MODE: <span class="stat">TOUCH + GYRO</span></div>
-  <div>VOXELS: <span id="count" class="stat">0</span></div>
-  <div style="font-size:10px;color:#ffcc00">
-    Tap: Build | Hold: Erase | Tilt: Rotate
+  <div><b>STRESS ANALYZER (EXPERIMENTAL)</b></div>
+  <div>Camera: <span id="camLabel" class="stat">FRONT</span></div>
+  <div>Blinks/sec: <span id="blinkVal" class="stat">0</span></div>
+  <div>Head Move: <span id="moveVal" class="stat">0</span></div>
+  <div>Stress Score: <span id="stressVal" class="stat">0</span></div>
+  <button id="switchCam">Switch Camera</button>
+  <div style="font-size:10px;color:#ff5555;margin-top:6px">
+    ⚠️ Not a lie detector. Experimental only.
   </div>
 </div>
 
-<canvas id="c"></canvas>
+<video id="video" autoplay playsinline muted></video>
+<canvas id="overlay"></canvas>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
 
 <script>
-/* ========= BASIC SETUP ========= */
-const canvas = document.getElementById("c");
-const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
-renderer.setSize(innerWidth, innerHeight);
+/* ========= ELEMENTS ========= */
+const video = document.getElementById("video");
+const canvas = document.getElementById("overlay");
+const ctx = canvas.getContext("2d");
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x000000);
+const blinkVal = document.getElementById("blinkVal");
+const moveVal = document.getElementById("moveVal");
+const stressVal = document.getElementById("stressVal");
+const camLabel = document.getElementById("camLabel");
 
-const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 1000);
-camera.position.set(0,0,20);
+canvas.width = innerWidth;
+canvas.height = innerHeight;
 
-scene.add(new THREE.AmbientLight(0xffffff,0.6));
-const light = new THREE.DirectionalLight(0x00f0ff,1);
-light.position.set(5,5,5);
-scene.add(light);
+/* ========= CAMERA ========= */
+let currentFacing = "user"; // user | environment
+let stream = null;
 
-const voxelGroup = new THREE.Group();
-scene.add(voxelGroup);
-
-/* ========= VOXELS ========= */
-const grid = 1.2;
-const placed = new Map();
-const countEl = document.getElementById("count");
-
-function makeCube(x,y,z){
-  const g = new THREE.BoxGeometry(grid*0.95,grid*0.95,grid*0.95);
-  const m = new THREE.MeshPhongMaterial({
-    color:0x001122,
-    emissive:0x00f0ff,
-    emissiveIntensity:0.4
+async function startCamera(){
+  if(stream){
+    stream.getTracks().forEach(t=>t.stop());
+  }
+  stream = await navigator.mediaDevices.getUserMedia({
+    video:{
+      facingMode: currentFacing,
+      width:1280,
+      height:720
+    },
+    audio:false
   });
-  const cube = new THREE.Mesh(g,m);
-  cube.position.set(x,y,z);
-  return cube;
+  video.srcObject = stream;
+  await video.play();
 }
 
-/* ========= RAYCAST ========= */
-const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
+document.getElementById("switchCam").onclick = ()=>{
+  currentFacing = currentFacing === "user" ? "environment" : "user";
+  camLabel.innerText = currentFacing === "user" ? "FRONT" : "BACK";
+  startCamera();
+};
 
-function snap(v){
-  return Math.round(v/grid)*grid;
-}
-
-function placeOrErase(x,y,erase=false){
-  pointer.x = (x/innerWidth)*2-1;
-  pointer.y = -(y/innerHeight)*2+1;
-  raycaster.setFromCamera(pointer,camera);
-
-  const pos = raycaster.ray.origin.clone()
-    .add(raycaster.ray.direction.clone().multiplyScalar(20));
-
-  const gx = snap(pos.x);
-  const gy = snap(pos.y);
-  const gz = snap(pos.z);
-  const key = `${gx},${gy},${gz}`;
-
-  if(erase){
-    if(placed.has(key)){
-      voxelGroup.remove(placed.get(key));
-      placed.delete(key);
-    }
-  }else{
-    if(!placed.has(key)){
-      const c = makeCube(gx,gy,gz);
-      voxelGroup.add(c);
-      placed.set(key,c);
-    }
-  }
-  countEl.innerText = placed.size;
-}
-
-/* ========= TOUCH ========= */
-let holdTimer = null;
-
-canvas.addEventListener("touchstart", e=>{
-  const t = e.touches[0];
-  holdTimer = setTimeout(()=>{
-    placeOrErase(t.clientX,t.clientY,true);
-  },450);
+/* ========= FACEMESH ========= */
+const faceMesh = new FaceMesh({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
 });
 
-canvas.addEventListener("touchend", e=>{
-  if(holdTimer){
-    clearTimeout(holdTimer);
-    const t = e.changedTouches[0];
-    placeOrErase(t.clientX,t.clientY,false);
-  }
-  holdTimer = null;
+faceMesh.setOptions({
+  maxNumFaces:1,
+  refineLandmarks:true,
+  minDetectionConfidence:0.6,
+  minTrackingConfidence:0.6
 });
 
-/* ========= GYRO ========= */
-if(window.DeviceOrientationEvent){
-  window.addEventListener("deviceorientation", e=>{
-    voxelGroup.rotation.x = e.beta * 0.01;
-    voxelGroup.rotation.y = e.gamma * 0.01;
+/* ========= ANALYSIS STATE ========= */
+let lastBlinkTime = 0;
+let blinkCount = 0;
+let prevHeadX = null;
+let headMovement = 0;
+
+/* ========= CORE ========= */
+faceMesh.onResults(res=>{
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!res.multiFaceLandmarks) return;
+
+  const lm = res.multiFaceLandmarks[0];
+
+  /* ---- Blink detection (eye vertical distance) ---- */
+  const eyeTop = lm[159];
+  const eyeBottom = lm[145];
+  const eyeDist = Math.abs(eyeTop.y - eyeBottom.y);
+
+  const now = performance.now();
+  if(eyeDist < 0.005 && now - lastBlinkTime > 300){
+    blinkCount++;
+    lastBlinkTime = now;
+  }
+
+  /* ---- Head movement ---- */
+  const nose = lm[1];
+  if(prevHeadX !== null){
+    headMovement += Math.abs(nose.x - prevHeadX);
+  }
+  prevHeadX = nose.x;
+
+  /* ---- Draw face points (debug) ---- */
+  ctx.fillStyle="#00f0ff";
+  lm.forEach(p=>{
+    ctx.fillRect(p.x*canvas.width-1,p.y*canvas.height-1,2,2);
   });
-}
 
-/* ========= DESKTOP MOUSE ========= */
-let dragging=false,lastX=0,lastY=0;
+  /* ---- Metrics per second ---- */
+  blinkVal.innerText = blinkCount;
+  moveVal.innerText = headMovement.toFixed(3);
 
-canvas.addEventListener("mousedown",e=>{
-  dragging=true;lastX=e.clientX;lastY=e.clientY;
-});
-canvas.addEventListener("mousemove",e=>{
-  if(dragging){
-    voxelGroup.rotation.y += (e.clientX-lastX)*0.005;
-    voxelGroup.rotation.x += (e.clientY-lastY)*0.005;
-    lastX=e.clientX;lastY=e.clientY;
+  /* ---- Stress score (simple rule-based) ---- */
+  let stress = 0;
+  stress += blinkCount * 8;
+  stress += headMovement * 400;
+  stress = Math.min(100, Math.floor(stress));
+
+  stressVal.innerText = stress;
+
+  /* ---- reset every second ---- */
+  if(now % 1000 < 16){
+    blinkCount = 0;
+    headMovement = 0;
   }
 });
-canvas.addEventListener("mouseup",()=>dragging=false);
-canvas.addEventListener("contextmenu",e=>{
-  e.preventDefault();
-  placeOrErase(e.clientX,e.clientY,true);
-});
-canvas.addEventListener("click",e=>{
-  placeOrErase(e.clientX,e.clientY,false);
-});
 
-/* ========= LOOP ========= */
-function animate(){
-  requestAnimationFrame(animate);
-  renderer.render(scene,camera);
+/* ========= FRAME LOOP ========= */
+async function process(){
+  await faceMesh.send({image:video});
+  requestAnimationFrame(process);
 }
-animate();
+
+/* ========= START ========= */
+startCamera().then(process);
 </script>
 
 </body>
